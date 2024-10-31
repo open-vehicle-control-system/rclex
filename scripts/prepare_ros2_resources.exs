@@ -1,32 +1,13 @@
-defmodule Mix.Tasks.Rclex.Prep.Ros2 do
+#!/usr/bin/env elixir
+
+defmodule Ros2PrepareResources do
   @shortdoc "Prepare ROS 2 resources under .ros2 directory."
   @moduledoc """
   #{@shortdoc}
 
-  ```
-  mix rclex.prep.ros2 --arch ARCH
-  ```
 
   ROS 2 resources will be prepared under .ros2.
-
-  An `--arch` option should be specified, option value is `arm64v8`, currently only supported.
-
-  ## Examples
-
-  specify arch explicitly with `--arch` option
-
-  ```
-  mix rclex.prep.ros2 --arch arm64v8
-  ```
-
-  For Nerves, `export MIX_TARGET=[TARGET]` is invoked properly, `--arch` option is not needed.
-
-  ```
-  mix rclex.prep.ros2
-  ```
   """
-
-  use Mix.Task
 
   @arm64v8_ros_distros ["foxy", "galactic", "humble"]
   @amd64_ros_distros ["foxy", "galactic", "humble"]
@@ -37,55 +18,59 @@ defmodule Mix.Tasks.Rclex.Prep.Ros2 do
     "arm32v7" => @arm32v7_ros_distros
   }
   @supported_arch Map.keys(@supported_ros_distros)
-
-  @nerves_target_arch_map %{"rpi4" => "arm64v8", "rpi3" => "arm32v7"}
-
   @switches [arch: :string]
 
   @doc false
-  def run(args) do
+  def main(_args) do
     if not command_exists?("docker") do
-      Mix.raise("""
+      IO.puts("""
       Please install docker command first, we need it.
       """)
+      System.halt(1)
     end
 
-    parsed_args = parse_args(args)
+    ros_arch = System.get_env("ROS_ARCH")
 
-    arch =
-      Keyword.get(
-        parsed_args,
-        :arch,
-        Map.get(@nerves_target_arch_map, System.get_env("MIX_TARGET"))
-      )
-
-    if arch not in @supported_arch do
-      Mix.raise("""
-      Please select and specify the appropriate --arch from the following.
+    if ros_arch not in @supported_arch do
+      IO.puts("""
+      Please select and specify the appropriate ROS_ARCH from the following.
       #{Enum.join(@supported_arch, ", ")}
       """)
+      System.halt(1)
     end
 
     ros_distro = System.get_env("ROS_DISTRO")
-    supported_ros_distros = Map.get(@supported_ros_distros, arch, [])
+    supported_ros_distros = Map.get(@supported_ros_distros, ros_arch, [])
 
     if ros_distro not in supported_ros_distros do
-      Mix.raise("""
+      IO.puts("""
       Please set the appropriate ROS_DISTRO from the following.
       #{Enum.join(supported_ros_distros, ", ")}
       """)
+      System.halt(1)
     end
 
-    # NOTE: If you implement the copy destination option, pass the path here.
-    dest_dir_path = copy_dest_dir_path(arch, ros_distro)
+    dest_dir_path = copy_dest_dir_path(ros_arch)
 
-    message = """
-    Are you sure to copy ROS 2 resources to following directory?
-    path: #{dest_dir_path}
-    """
+    copy_from_docker!(dest_dir_path, ros_arch, ros_distro)
 
-    if Mix.shell().yes?(String.trim_trailing(message)) do
-      copy_from_docker!(dest_dir_path, arch, ros_distro)
+    :ok
+  end
+
+  @doc false
+  def ask_yes_no(message) do
+    answer = IO.gets("#{message} (y/n): ")
+            |> String.trim()
+            |> String.downcase()
+
+    case answer do
+      "y" -> true
+      "yes" -> true
+      "n" -> false
+      "no" -> false
+      _ ->
+        IO.puts("Invalid input. Please enter 'y' or 'n'.")
+        ask_yes_no(message)
     end
   end
 
@@ -107,11 +92,11 @@ defmodule Mix.Tasks.Rclex.Prep.Ros2 do
   @doc false
   def copy_from_docker!(dest_dir_path, arch, ros_distro) do
     dest_path = Path.join(dest_dir_path, "/opt/ros/#{ros_distro}")
-    create_resources_directory!(dest_path, _git_ignore = true)
+    create_resources_directory!(dest_path)
     copy_ros_resources_from_docker!(dest_path, arch, ros_distro)
 
     dest_path = Path.join(dest_dir_path, "/opt/ros/#{ros_distro}/lib")
-    create_resources_directory!(dest_path, _git_ignore = false)
+    create_resources_directory!(dest_path)
     copy_vendor_resources_from_docker!(dest_path, arch, ros_distro)
   end
 
@@ -175,28 +160,25 @@ defmodule Mix.Tasks.Rclex.Prep.Ros2 do
   defp copy_from_docker_impl!(arch, ros_distro, src_path, dest_path) do
     with true <- File.exists?(dest_path) do
       docker_tag = ros_docker_image_tag(arch, ros_distro)
-      docker_command_args = ["run", "--rm", "-v", "#{dest_path}:/mnt", docker_tag]
+      docker_platform = case arch do
+        "arm32v7" -> "linux/arm/v7"
+        "arm64v8" -> "linux/arm64"
+        _         -> "linux/amd64"
+      end
+      docker_command_args = ["run", "--platform", "#{docker_platform}", "--rm", "-v", "#{dest_path}:/mnt", docker_tag]
       copy_command = ["bash", "-c", "for s in #{src_path}; do cp -rf $s /mnt; done"]
 
       {_, 0} = System.cmd("docker", docker_command_args ++ copy_command)
     end
   end
 
-  @doc false
-  def ros_docker_image_tag(arch, ros_distro)
-
-  # refs. https://hub.docker.com/r/arm64v8/ros
-  def ros_docker_image_tag("arm64v8", ros_distro) when ros_distro in @arm64v8_ros_distros do
-    "arm64v8/ros:#{ros_distro}-ros-core"
-  end
-
-  # refs. https://hub.docker.com/r/amd64/ros
-  def ros_docker_image_tag("amd64", ros_distro) when ros_distro in @amd64_ros_distros do
-    "amd64/ros:#{ros_distro}-ros-core"
-  end
-
   def ros_docker_image_tag("arm32v7", ros_distro) when ros_distro in @arm32v7_ros_distros do
     "rclex/arm32v7_ros_docker_with_vendor_resources:#{ros_distro}"
+  end
+
+  @doc false
+  def ros_docker_image_tag(_arch, ros_distro) do
+    "ros:#{ros_distro}-ros-core"
   end
 
   defp arch_dir_name("arm64v8"), do: "aarch64-linux-gnu"
@@ -204,26 +186,14 @@ defmodule Mix.Tasks.Rclex.Prep.Ros2 do
   defp arch_dir_name("arm32v7"), do: "arm-linux-gnueabihf"
 
   @doc false
-  @spec create_resources_directory!(directory_path :: String.t(), gitignore :: boolean()) :: :ok
-  def create_resources_directory!(directory_path, git_ignore) do
+  @spec create_resources_directory!(directory_path :: String.t()) :: :ok
+  def create_resources_directory!(directory_path) do
     File.mkdir_p!(directory_path)
-
-    if git_ignore do
-      gitignore_content = """
-      # generated by `mix rclex.prep.ros2`
-      *
-      !.gitignore
-      """
-
-      File.write!(Path.join(directory_path, ".gitignore"), gitignore_content)
-    end
   end
 
-  defp copy_dest_dir_path(path \\ File.cwd!(), arch, ros_distro) do
-    if Mix.target() == :host do
-      Path.join(path, ".ros2/resources/from-docker/#{arch}/#{ros_distro}")
-    else
-      Path.join(path, "rootfs_overlay")
-    end
+  defp copy_dest_dir_path(ros_arch) do
+    Path.join(__ENV__.file |> Path.dirname(), "../.ros2/#{ros_arch}/")
   end
 end
+
+Ros2PrepareResources.main(System.argv())

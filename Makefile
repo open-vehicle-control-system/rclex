@@ -7,11 +7,16 @@ ifeq ($(origin ROS_DISTRO), undefined)
 $(error $(ERROR_ROS_DISTRO_NOT_DEFINED))
 endif
 
-ifeq ($(MIX_TARGET), host)
-ROS_DIR ?= /opt/ros/$(ROS_DISTRO)
-else
-ROS_DIR ?= $(NERVES_APP)/rootfs_overlay/opt/ros/$(ROS_DISTRO)
+define ERROR_ROS_ARCH_NOT_DEFINED
+Environmental variable `ROS_ARCH` is not defined.
+endef
+ifeq ($(origin ROS_ARCH), undefined)
+$(error $(ERROR_ROS_ARCH_NOT_DEFINED))
 endif
+
+ROS_DIR = $(MIX_APP_PATH)/../../../../deps/rclex/.ros2/$(ROS_ARCH)/opt/ros/${ROS_DISTRO}
+
+$(info $(ROS_DIR))
 
 SRC_DIR  = src
 OBJ_DIR  = $(MIX_APP_PATH)/obj
